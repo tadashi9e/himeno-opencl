@@ -362,15 +362,6 @@ main(int argc, char* argv[]) {
     properties[1] = reinterpret_cast<cl_context_properties>(platform_id);
     properties[2] = 0;
 
-    clGetGLContextInfoKHR_fn myGetGLContextInfoKHR =
-      reinterpret_cast<clGetGLContextInfoKHR_fn>(
-          clGetExtensionFunctionAddressForPlatform(
-              platform_id, "clGetGLContextInfoKHR"));
-
-    size_t size;
-    myGetGLContextInfoKHR(properties, CL_DEVICES_FOR_GL_CONTEXT_KHR,
-                          sizeof(cl_device_id), &device, &size);
-
     context = cl::Context(device, properties);
     command_queue = cl::CommandQueue(context, device, 0);
 
