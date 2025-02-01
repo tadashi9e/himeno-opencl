@@ -21,6 +21,7 @@ static cl::Context context;
 static cl::CommandQueue command_queue;
 static cl::Program program;
 static cl::Kernel kernel_mat_set_init;
+static cl::Kernel kernel_mat_set;
 static cl::Kernel kernel_jacobi1;
 static cl::Kernel kernel_sum;
 static cl::Buffer dev_mat_p;
@@ -92,9 +93,14 @@ set_param(int is[],char *size)
 }
 
 cl::Buffer newMat(cl_int mnums, cl_int mrows, cl_int mcols, cl_int mdeps) {
-  return cl::Buffer(
+  try {
+    return cl::Buffer(
         context, CL_MEM_READ_WRITE,
         sizeof(cl_float) * mnums * mrows * mcols * mdeps);
+  } catch (...) {
+    std::cerr << "failed to allocate cl::Buffer" << std::endl;
+    throw;
+  }
 }
 
 // ----------------------------------------------------------------------
@@ -194,23 +200,36 @@ static std::string loadProgramSource(const char *filename) {
 
 static void mat_set_init(cl::Buffer* Mat) {
   DEBUG_("mat_set_init(Mat)");
-  kernel_mat_set_init.setArg(0, *Mat);
-  command_queue.enqueueNDRangeKernel(
-      kernel_mat_set_init,
-      cl::NullRange,
-      cl::NDRange(mimax, mjmax, mkmax),
-      cl::NDRange(limax, ljmax, lkmax));
-  command_queue.flush();
+  try {
+    kernel_mat_set_init.setArg(0, *Mat);
+    command_queue.enqueueNDRangeKernel(
+        kernel_mat_set_init,
+        cl::NullRange,
+        cl::NDRange(mimax, mjmax, mkmax),
+        cl::NDRange(limax, ljmax, lkmax));
+    command_queue.flush();
+  } catch (...) {
+    std::cerr << "failed to mat_set_init" << std::endl;
+    throw;
+  }
 }
 
 static void mat_set(cl::Buffer* Mat, int l, float z) {
   DEBUG_("mat_set(Mat," << l << "," << z << ")");
-  std::vector<cl_float> tmp(sizeof(cl_float) * mimax * mjmax * mkmax, z);
-  command_queue.enqueueWriteBuffer(
-      *Mat, CL_TRUE, 0,
-      sizeof(cl_float) * mimax * mjmax * mkmax,
-      &tmp.front());
-  command_queue.flush();
+  try {
+    kernel_mat_set.setArg(0, *Mat);
+    kernel_mat_set.setArg(1, sizeof(cl_int), &l);
+    kernel_mat_set.setArg(2, sizeof(cl_float), &z);
+    command_queue.enqueueNDRangeKernel(
+        kernel_mat_set,
+        cl::NullRange,
+        cl::NDRange(mimax, mjmax, mkmax),
+        cl::NDRange(limax, ljmax, lkmax));
+    command_queue.flush();
+  } catch (...) {
+    std::cerr << "failed to mat_set" << std::endl;
+    throw;
+  }
 }
 
 static float jacobi(
@@ -246,11 +265,13 @@ static float jacobi(
         cl::NullRange,
         cl::NDRange(mimax, mjmax, mkmax),
         cl::NDRange(limax, ljmax, lkmax));
+    command_queue.flush();
     DEBUG_KERNEL("    copy p <= wrk2");
     command_queue.enqueueCopyBuffer(
         dev_mat_wrk2, dev_mat_p,
         0, 0,
         sizeof(cl_float) * mimax * mjmax * mkmax);
+    command_queue.flush();
     DEBUG_KERNEL("    sum of gosa");
     command_queue.enqueueWriteBuffer(
       dev_mat_sum_output, CL_TRUE, 0,
@@ -398,6 +419,9 @@ main(int argc, char* argv[]) {
 
     DEBUG_("setting up mat_set_init kernel...");
     kernel_mat_set_init = cl::Kernel(program, "mat_set_init");
+
+    DEBUG_("setting up mat_set kernel...");
+    kernel_mat_set = cl::Kernel(program, "mat_set");
 
     DEBUG_("setting up jacobi1 kernel...");
     kernel_jacobi1 = cl::Kernel(program, "jacobi1");
