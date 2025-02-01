@@ -1,5 +1,5 @@
 /* -*- mode:c -*- */
-#define MR(m,n,r,c,d) m[(n) * mimax * mkmax * mkmax + (r) * mjmax * mkmax + (c) * mkmax + (d)]
+#define MR(m,n,r,c,d) m[(n) * mimax * mjmax * mkmax + (r) * mjmax * mkmax + (c) * mkmax + (d)]
 
 __kernel void mat_set_init(
     __global float *Mat) {

@@ -94,7 +94,7 @@ set_param(int is[],char *size)
   }
 }
 
-cl::Buffer newMat(cl_int mnums, cl_int mrows, cl_int mcols, cl_int mdeps) {
+cl::Buffer newMat(size_t mnums, size_t mrows, size_t mcols, size_t mdeps) {
   try {
     cl_int err;
     const size_t sz = sizeof(cl_float) * mnums * mrows * mcols * mdeps;
@@ -217,7 +217,7 @@ static void mat_set_init(cl::Buffer* Mat) {
         cl::NullRange,
         cl::NDRange(mimax, mjmax, mkmax),
         cl::NDRange(limax, ljmax, lkmax));
-    command_queue.flush();
+    command_queue.finish();
   } catch (...) {
     std::cerr << "failed to mat_set_init" << std::endl;
     throw;
@@ -235,7 +235,7 @@ static void mat_set(cl::Buffer* Mat, cl_int l, cl_float z) {
         cl::NullRange,
         cl::NDRange(mimax, mjmax, mkmax),
         cl::NDRange(limax, ljmax, lkmax));
-    command_queue.flush();
+    command_queue.finish();
   } catch (...) {
     std::cerr << "failed to mat_set" << std::endl;
     throw;
@@ -299,6 +299,7 @@ static float jacobi(
         cl::NullRange,
         cl::NDRange(mimax * mjmax * mkmax),
         cl::NDRange(GROUP_SIZE));
+    command_queue.finish();
     DEBUG_KERNEL("        reading gosa");
     current_execution = "enqueueReadBuffer(sum_output)";
     command_queue.enqueueReadBuffer(dev_mat_sum_output,
@@ -392,6 +393,11 @@ main(int argc, char* argv[]) {
         std::cout << "device: vendor[" << devvendor << "]"
           ",name[" << devname << "]"
           ",version[" << devver << "]" << std::endl;
+        size_t global_mem_size;
+        device.getInfo(CL_DEVICE_GLOBAL_MEM_SIZE,
+                       &global_mem_size);
+        std::cout << "        DEVICE_GLOBAL_MEM_SIZE="
+                  << global_mem_size << std::endl;
         size_t local_mem_size;
         device.getInfo(CL_DEVICE_LOCAL_MEM_SIZE,
                        &local_mem_size);
