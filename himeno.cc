@@ -36,9 +36,9 @@ static cl::Buffer dev_mat_sum_output;
 static cl_int mimax;
 static cl_int mjmax;
 static cl_int mkmax;
-static cl_int limax = 8;
-static cl_int ljmax = 8;
-static cl_int lkmax = 8;
+static cl_int limax = 16;
+static cl_int ljmax = 16;
+static cl_int lkmax = 16;
 static int GROUP_SIZE = 512;
 static cl_float omega = 0.8f;
 
@@ -97,9 +97,12 @@ set_param(int is[],char *size)
 cl::Buffer newMat(cl_int mnums, cl_int mrows, cl_int mcols, cl_int mdeps) {
   try {
     cl_int err;
+    const size_t sz = sizeof(cl_float) * mnums * mrows * mcols * mdeps;
+    DEBUG_("newMat: " << sz << "=" << sizeof(cl_float)
+           << "*" << mnums << "*" << mrows << "*" << mcols << "*" << mdeps);
     cl::Buffer buff(
         context, CL_MEM_READ_WRITE,
-        sizeof(cl_float) * mnums * mrows * mcols * mdeps, NULL, &err);
+        sz, NULL, &err);
     if (err != 0) {
       throw cl::Error(err, "failed to allocate cl::Buffer");
     }
@@ -389,22 +392,35 @@ main(int argc, char* argv[]) {
         std::cout << "device: vendor[" << devvendor << "]"
           ",name[" << devname << "]"
           ",version[" << devver << "]" << std::endl;
-        size_t device_max_mem_alloc_size;
-        device.getInfo(CL_DEVICE_MAX_MEM_ALLOC_SIZE,
-                       &device_max_mem_alloc_size);
-        std::cout << "        DEVICE_MAX_MEM_ALLOC_SIZE="
-                  << device_max_mem_alloc_size << std::endl;
-        int device_max_compute_units;
+        size_t local_mem_size;
+        device.getInfo(CL_DEVICE_LOCAL_MEM_SIZE,
+                       &local_mem_size);
+        std::cout << "        DEVICE_LOCAL_MEM_SIZE="
+                  << local_mem_size << std::endl;
+        int max_compute_units;
         device.getInfo(CL_DEVICE_MAX_COMPUTE_UNITS,
-                       &device_max_compute_units);
+                       &max_compute_units);
         std::cout << "        DEVICE_MAX_COMPUTE_UNITS="
-                  << device_max_compute_units << std::endl;
-        size_t device_max_work_group_size;
+                  << max_compute_units << std::endl;
+        size_t max_work_group_size;
         device.getInfo(CL_DEVICE_MAX_WORK_GROUP_SIZE,
-                       &device_max_work_group_size);
+                       &max_work_group_size);
         std::cout << "        DEVICE_MAX_WORK_GROUP_SIZE="
-                  << device_max_work_group_size << std::endl;
-        GROUP_SIZE = device_max_work_group_size;
+                  << max_work_group_size << std::endl;
+        GROUP_SIZE = max_work_group_size;
+        while (limax * ljmax * lkmax > GROUP_SIZE) {
+          limax /= 2;
+          if (limax * ljmax * lkmax > GROUP_SIZE) {
+            ljmax /= 2;
+          }
+          if (limax * ljmax * lkmax > GROUP_SIZE) {
+            lkmax /= 2;
+          }
+        }
+        std::cout <<
+          "limax = " << limax << " "
+          "ljmax = " << ljmax << " "
+          "lkmax = " << lkmax << std::endl;
         break;
       }
     }
