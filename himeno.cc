@@ -3,7 +3,7 @@
 #include <iostream>
 #include <numeric>
 #define CL_HPP_ENABLE_EXCEPTIONS
-#include <CL/cl.hpp>
+#include <CL/opencl.hpp>
 
 #ifdef DEBUG
 #define DEBUG_(msg) std::cout << msg << std::endl;
@@ -41,6 +41,8 @@ static cl_int ljmax = 8;
 static cl_int lkmax = 8;
 static int GROUP_SIZE = 512;
 static cl_float omega = 0.8f;
+
+static const char* current_execution = "initial";
 
 double
 fflop(int mx,int my, int mz)
@@ -214,7 +216,7 @@ static void mat_set_init(cl::Buffer* Mat) {
   }
 }
 
-static void mat_set(cl::Buffer* Mat, int l, float z) {
+static void mat_set(cl::Buffer* Mat, cl_int l, cl_float z) {
   DEBUG_("mat_set(Mat," << l << "," << z << ")");
   try {
     kernel_mat_set.setArg(0, *Mat);
@@ -237,8 +239,9 @@ static float jacobi(
     cl::Buffer* M1, cl::Buffer* M2, cl::Buffer* M3,
     cl::Buffer* M4, cl::Buffer* M5, cl::Buffer* M6, cl::Buffer* M7) {
   DEBUG_("jacobi(" << nn << ")");
-  float gosa;
+  cl_float gosa = 0.0f;
   DEBUG_("    setup jacobi1 kernel arguments");
+  current_execution = "setup jacobi1 kernel arguments";
   kernel_jacobi1.setArg(0, dev_mat_a);
   kernel_jacobi1.setArg(1, dev_mat_b);
   kernel_jacobi1.setArg(2, dev_mat_c);
@@ -248,43 +251,48 @@ static float jacobi(
   kernel_jacobi1.setArg(6, dev_mat_wrk2);
   kernel_jacobi1.setArg(7, dev_mat_gosa);
   kernel_jacobi1.setArg(8, sizeof(cl_float), &omega);
-  gosa = 0.0;
   DEBUG_("    setup sum kernel arguments");
+  current_execution = "setup sum kernel arguments";
   kernel_sum.setArg(0, dev_mat_gosa);
   kernel_sum.setArg(1, dev_mat_sum_output);
   kernel_sum.setArg(2, sizeof(cl_float) * GROUP_SIZE, NULL);
   const std::vector<cl_float>
-    zeros(sizeof(cl_float) * mimax * mjmax * mkmax, 0.0f);
-  std::vector<cl_float> sum_output;
-  sum_output.resize(GROUP_SIZE);
+    zeros(sizeof(cl_float) * GROUP_SIZE, 0.0f);
+  std::vector<cl_float>
+    sum_output(sizeof(cl_float) * GROUP_SIZE, 0.0f);
   for(int n=0 ; n<nn ; n++) {
     DEBUG_("trial " << n << " / " << nn);
-    DEBUG_("    call jacobi1 kernel");
+    DEBUG_("    executing jacobi1 kernel");
+    current_execution = "enqueueNDRangeKernel(jacobi1)";
     command_queue.enqueueNDRangeKernel(
         kernel_jacobi1,
         cl::NullRange,
         cl::NDRange(mimax, mjmax, mkmax),
         cl::NDRange(limax, ljmax, lkmax));
-    command_queue.flush();
-    DEBUG_KERNEL("    copy p <= wrk2");
+    command_queue.finish();
+    DEBUG_KERNEL("    copy p := wrk2");
+    current_execution = "enqueueCopyBuffer(from wrk2 to p)";
     command_queue.enqueueCopyBuffer(
         dev_mat_wrk2, dev_mat_p,
         0, 0,
         sizeof(cl_float) * mimax * mjmax * mkmax);
-    command_queue.flush();
+    command_queue.finish();
     DEBUG_KERNEL("    sum of gosa");
+    current_execution = "enqueueWriteBuffer(sum_output as 0)";
     command_queue.enqueueWriteBuffer(
       dev_mat_sum_output, CL_TRUE, 0,
       sizeof(cl_float) * GROUP_SIZE,
       &zeros.front());
     command_queue.finish();
-    DEBUG_KERNEL("        call gosa sum kernel");
+    current_execution = "enqueueNDRangeKernel(sum)";
+    DEBUG_KERNEL("        executing gosa sum kernel");
     command_queue.enqueueNDRangeKernel(
         kernel_sum,
         cl::NullRange,
         cl::NDRange(mimax * mjmax * mkmax),
         cl::NDRange(GROUP_SIZE));
     DEBUG_KERNEL("        reading gosa");
+    current_execution = "enqueueReadBuffer(sum_output)";
     command_queue.enqueueReadBuffer(dev_mat_sum_output,
                                     CL_TRUE, 0, 1, &sum_output[0]);
     command_queue.finish();
@@ -293,6 +301,7 @@ static float jacobi(
         sum_output.begin(), sum_output.end(), 0.0f);
     DEBUG_("    gosa=" << gosa);
   }
+  current_execution = "finished jacobi1";
   return gosa;
 }
 
@@ -354,6 +363,7 @@ main(int argc, char* argv[]) {
   printf("imax = %d jmax = %d kmax =%d\n",imax,jmax,kmax);
 
   try {
+    current_execution = "cl::Platform::get()";
     std::vector<cl::Platform> platforms;
     cl::Platform::get(&platforms);
     for (cl::Platform& plat : platforms) {
@@ -383,10 +393,12 @@ main(int argc, char* argv[]) {
     properties[1] = reinterpret_cast<cl_context_properties>(platform_id);
     properties[2] = 0;
 
+    current_execution = "cl::Context()";
     context = cl::Context(device, properties);
     command_queue = cl::CommandQueue(context, device, 0);
 
     DEBUG_("creating cl::Buffers...");
+    current_execution = "cl::Buffers()";
     dev_mat_p = newMat(1,mimax,mjmax,mkmax);
     dev_mat_bnd = newMat(1,mimax,mjmax,mkmax);
     dev_mat_wrk1 = newMat(1,mimax,mjmax,mkmax);
@@ -400,9 +412,12 @@ main(int argc, char* argv[]) {
         sizeof(cl_float) * GROUP_SIZE);
 
     DEBUG_("loading kernel source...");
+    current_execution = "loading kernel source";
     const std::string source_string = loadProgramSource(KERNEL_SOURCE);
+    current_execution = "cl::Program()";
     program = cl::Program(context, source_string);
     try {
+      current_execution = "cl::Program::build()";
       program.build();
     } catch (const cl::Error& err) {
       std::cout << "Build Status: "
@@ -418,17 +433,22 @@ main(int argc, char* argv[]) {
     }
 
     DEBUG_("setting up mat_set_init kernel...");
+    current_execution = "cl::Kernel(mat_set_init)";
     kernel_mat_set_init = cl::Kernel(program, "mat_set_init");
 
     DEBUG_("setting up mat_set kernel...");
+    current_execution = "cl::Kernel(mat_set)";
     kernel_mat_set = cl::Kernel(program, "mat_set");
 
     DEBUG_("setting up jacobi1 kernel...");
+    current_execution = "cl::Kernel(jacobi1)";
     kernel_jacobi1 = cl::Kernel(program, "jacobi1");
 
     DEBUG_("setting up sum kernel...");
+    current_execution = "cl::Kernel(sum)";
     kernel_sum = cl::Kernel(program, "sum");
 
+    current_execution = "set up matrix";
     mat_set_init(&dev_mat_p);
     mat_set(&dev_mat_bnd,0,1.0);
     mat_set(&dev_mat_wrk1,0,0.0);
@@ -487,6 +507,7 @@ main(int argc, char* argv[]) {
     printf(" Score based on Pentium III 600MHz using Fortran 77: %f\n",
            mflops(nn,cpu,flop)/82);
   } catch (const cl::Error& err) {
+    std::cerr << current_execution << ": ";
     report_cl_error(err);
   }
   return 0;
