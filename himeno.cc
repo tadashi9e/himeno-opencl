@@ -96,9 +96,14 @@ set_param(int is[],char *size)
 
 cl::Buffer newMat(cl_int mnums, cl_int mrows, cl_int mcols, cl_int mdeps) {
   try {
-    return cl::Buffer(
+    cl_int err;
+    cl::Buffer buff(
         context, CL_MEM_READ_WRITE,
-        sizeof(cl_float) * mnums * mrows * mcols * mdeps);
+        sizeof(cl_float) * mnums * mrows * mcols * mdeps, NULL, &err);
+    if (err != 0) {
+      throw cl::Error(err, "failed to allocate cl::Buffer");
+    }
+    return buff;
   } catch (...) {
     std::cerr << "failed to allocate cl::Buffer" << std::endl;
     throw;
@@ -384,6 +389,22 @@ main(int argc, char* argv[]) {
         std::cout << "device: vendor[" << devvendor << "]"
           ",name[" << devname << "]"
           ",version[" << devver << "]" << std::endl;
+        size_t device_max_mem_alloc_size;
+        device.getInfo(CL_DEVICE_MAX_MEM_ALLOC_SIZE,
+                       &device_max_mem_alloc_size);
+        std::cout << "        DEVICE_MAX_MEM_ALLOC_SIZE="
+                  << device_max_mem_alloc_size << std::endl;
+        int device_max_compute_units;
+        device.getInfo(CL_DEVICE_MAX_COMPUTE_UNITS,
+                       &device_max_compute_units);
+        std::cout << "        DEVICE_MAX_COMPUTE_UNITS="
+                  << device_max_compute_units << std::endl;
+        size_t device_max_work_group_size;
+        device.getInfo(CL_DEVICE_MAX_WORK_GROUP_SIZE,
+                       &device_max_work_group_size);
+        std::cout << "        DEVICE_MAX_WORK_GROUP_SIZE="
+                  << device_max_work_group_size << std::endl;
+        GROUP_SIZE = device_max_work_group_size;
         break;
       }
     }
