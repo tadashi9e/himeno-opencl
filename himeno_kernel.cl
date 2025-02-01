@@ -13,6 +13,19 @@ __kernel void mat_set_init(
     /(float)((mimax - 1)*(mimax - 1));
 }
 
+__kernel void mat_set(
+    __global float *Mat,
+    int n,
+    float value) {
+  const int mimax = get_global_size(0);
+  const int mjmax = get_global_size(1);
+  const int mkmax = get_global_size(2);
+  const int i = get_global_id(0);
+  const int j = get_global_id(1);
+  const int k = get_global_id(2);
+  MR(Mat,n,i,j,k) = value;
+}
+
 __kernel void jacobi1(
     __global const float* a,
     __global const float* b,
