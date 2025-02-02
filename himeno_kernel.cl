@@ -77,17 +77,12 @@ __kernel void sum(
   const int local_id = get_local_id(0);
 
   local_sum[local_id] = input[global_id];
+
   barrier(CLK_LOCAL_MEM_FENCE);
 
-  int stride0 = local_size;
-  for (int stride = stride0 / 2; stride > 0; stride0 = stride, stride /= 2) {
+  for (int stride = local_size / 2; stride > 0; stride /= 2) {
     if (local_id < stride) {
       local_sum[local_id] += local_sum[local_id + stride];
-      if ((stride * 2) < stride0) {
-        if (local_id == 0) {
-          local_sum[local_id] += local_sum[local_id + (stride0 -1)];
-        }
-      }
     }
     barrier(CLK_LOCAL_MEM_FENCE);
   }

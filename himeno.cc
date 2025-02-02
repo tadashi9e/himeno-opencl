@@ -41,6 +41,9 @@ static cl_int ljmax = 16;
 static cl_int lkmax = 16;
 static int GROUP_SIZE = 512;
 static cl_float omega = 0.8f;
+static size_t sum_size;
+static std::vector<cl_float> zeros;
+static std::vector<cl_float> sum_output;
 
 static const char* current_execution = "initial";
 
@@ -94,12 +97,14 @@ set_param(int is[],char *size)
   }
 }
 
-cl::Buffer newMat(size_t mnums, size_t mrows, size_t mcols, size_t mdeps) {
+cl::Buffer newMat(size_t mnums, size_t mrows, size_t mcols, size_t mdeps,
+                  const char* name) {
   try {
     cl_int err;
     const size_t sz = sizeof(cl_float) * mnums * mrows * mcols * mdeps;
-    DEBUG_("newMat: " << sz << "=" << sizeof(cl_float)
-           << "*" << mnums << "*" << mrows << "*" << mcols << "*" << mdeps);
+    std::cout << "newMat: " << sz << "=" << sizeof(cl_float)
+              << "*" << mnums << "*" << mrows << "*" << mcols << "*" << mdeps
+              << ": " << name << std::endl;
     cl::Buffer buff(
         context, CL_MEM_READ_WRITE,
         sz, NULL, &err);
@@ -263,11 +268,7 @@ static float jacobi(
   current_execution = "setup sum kernel arguments";
   kernel_sum.setArg(0, dev_mat_gosa);
   kernel_sum.setArg(1, dev_mat_sum_output);
-  kernel_sum.setArg(2, sizeof(cl_float) * GROUP_SIZE, NULL);
-  const std::vector<cl_float>
-    zeros(sizeof(cl_float) * GROUP_SIZE, 0.0f);
-  std::vector<cl_float>
-    sum_output(sizeof(cl_float) * GROUP_SIZE, 0.0f);
+  kernel_sum.setArg(2, sizeof(cl_float) * sum_size, NULL);
   for(int n=0 ; n<nn ; n++) {
     DEBUG_("trial " << n << " / " << nn);
     DEBUG_("    executing jacobi1 kernel");
@@ -289,7 +290,7 @@ static float jacobi(
     current_execution = "enqueueWriteBuffer(sum_output as 0)";
     command_queue.enqueueWriteBuffer(
       dev_mat_sum_output, CL_TRUE, 0,
-      sizeof(cl_float) * GROUP_SIZE,
+      sizeof(cl_float) * sum_size,
       &zeros.front());
     command_queue.finish();
     current_execution = "enqueueNDRangeKernel(sum)";
@@ -298,7 +299,7 @@ static float jacobi(
         kernel_sum,
         cl::NullRange,
         cl::NDRange(mimax * mjmax * mkmax),
-        cl::NDRange(GROUP_SIZE));
+        cl::NDRange(sum_size));
     command_queue.finish();
     DEBUG_KERNEL("        reading gosa");
     current_execution = "enqueueReadBuffer(sum_output)";
@@ -306,8 +307,9 @@ static float jacobi(
                                     CL_TRUE, 0, 1, &sum_output[0]);
     command_queue.finish();
     DEBUG_KERNEL("        accumulating gosa");
-    gosa = std::accumulate(
-        sum_output.begin(), sum_output.end(), 0.0f);
+    for (size_t i = 1; i < sum_output.size() / sum_size; ++i) {
+      gosa += sum_output[i];
+    }
     DEBUG_("    gosa=" << gosa);
   }
   current_execution = "finished jacobi1";
@@ -338,13 +340,30 @@ second()
   return t ;
 }
 
+static void usage(const char* argv0) {
+  std::cout << "usage: " << "[--device N] [size]" << std::endl;
+  std::cout << "    N    : OpenCL device index" << std::endl;
+  std::cout << "    size : Problem size (xs / s / m / l / xl)" << std::endl;
+  exit(1);
+}
 int
 main(int argc, char* argv[]) {
+  size_t device_index = 0;
   int msize[3];
   char   size[10];
 
-  if(argc == 2){
-    strcpy(size,argv[1]);
+  int arg = 1;
+  if (arg < argc &&
+      std::string(argv[arg]) == "--device") {
+    ++arg;
+    if (arg >= argc) {
+      usage(argv[0]);
+    }
+    device_index = atoi(argv[arg]);
+    ++arg;
+  }
+  if (arg < argc) {
+    strcpy(size,argv[arg]);
   } else {
     printf("For example: \n");
     printf(" Grid-size= XS (32x32x64)\n");
@@ -356,7 +375,6 @@ main(int argc, char* argv[]) {
     scanf("%s",size);
     printf("\n");
   }
-
   set_param(msize,size);
 
   mimax= msize[0];
@@ -375,60 +393,75 @@ main(int argc, char* argv[]) {
     current_execution = "cl::Platform::get()";
     std::vector<cl::Platform> platforms;
     cl::Platform::get(&platforms);
+    bool found_device = false;
+    size_t dev_index = 0;
     for (cl::Platform& plat : platforms) {
       std::vector<cl::Device> devices;
+      const std::string platvendor = plat.getInfo<CL_PLATFORM_VENDOR>();
+      const std::string platname = plat.getInfo<CL_PLATFORM_NAME>();
+      const std::string platver = plat.getInfo<CL_PLATFORM_VERSION>();
+      std::cout << "platform: vendor[" << platvendor << "]"
+        ",name[" << platname << "]"
+        ",version[" << platver << "]" << std::endl;
       plat.getDevices(CL_DEVICE_TYPE_GPU, &devices);
-      if (!devices.empty()) {
-        platform = plat;
-        device = devices.front();
-        const std::string platvendor = plat.getInfo<CL_PLATFORM_VENDOR>();
-        const std::string platname = plat.getInfo<CL_PLATFORM_NAME>();
-        const std::string platver = plat.getInfo<CL_PLATFORM_VERSION>();
-        std::cout << "platform: vendor[" << platvendor << "]"
-          ",name[" << platname << "]"
-          ",version[" << platver << "]" << std::endl;
-        const std::string devvendor = device.getInfo<CL_DEVICE_VENDOR>();
-        const std::string devname = device.getInfo<CL_DEVICE_NAME>();
-        const std::string devver = device.getInfo<CL_DEVICE_VERSION>();
-        std::cout << "device: vendor[" << devvendor << "]"
+      for (cl::Device dev : devices) {
+        const std::string devvendor = dev.getInfo<CL_DEVICE_VENDOR>();
+        const std::string devname = dev.getInfo<CL_DEVICE_NAME>();
+        const std::string devver = dev.getInfo<CL_DEVICE_VERSION>();
+        std::cout << ((dev_index == device_index) ? '*' : ' ') <<
+          "device[" << dev_index << "]: vendor[" << devvendor << "]"
           ",name[" << devname << "]"
           ",version[" << devver << "]" << std::endl;
         size_t global_mem_size;
-        device.getInfo(CL_DEVICE_GLOBAL_MEM_SIZE,
-                       &global_mem_size);
+        dev.getInfo(CL_DEVICE_GLOBAL_MEM_SIZE,
+                    &global_mem_size);
         std::cout << "        DEVICE_GLOBAL_MEM_SIZE="
                   << global_mem_size << std::endl;
         size_t local_mem_size;
-        device.getInfo(CL_DEVICE_LOCAL_MEM_SIZE,
-                       &local_mem_size);
+        dev.getInfo(CL_DEVICE_LOCAL_MEM_SIZE,
+                    &local_mem_size);
         std::cout << "        DEVICE_LOCAL_MEM_SIZE="
                   << local_mem_size << std::endl;
         int max_compute_units;
-        device.getInfo(CL_DEVICE_MAX_COMPUTE_UNITS,
-                       &max_compute_units);
+        dev.getInfo(CL_DEVICE_MAX_COMPUTE_UNITS,
+                    &max_compute_units);
         std::cout << "        DEVICE_MAX_COMPUTE_UNITS="
                   << max_compute_units << std::endl;
         size_t max_work_group_size;
-        device.getInfo(CL_DEVICE_MAX_WORK_GROUP_SIZE,
-                       &max_work_group_size);
+        dev.getInfo(CL_DEVICE_MAX_WORK_GROUP_SIZE,
+                    &max_work_group_size);
         std::cout << "        DEVICE_MAX_WORK_GROUP_SIZE="
                   << max_work_group_size << std::endl;
-        GROUP_SIZE = max_work_group_size;
-        while (limax * ljmax * lkmax > GROUP_SIZE) {
-          limax /= 2;
-          if (limax * ljmax * lkmax > GROUP_SIZE) {
-            ljmax /= 2;
+        if (dev_index == device_index) {
+          GROUP_SIZE = max_work_group_size;
+          while (limax * ljmax * lkmax > GROUP_SIZE) {
+            limax /= 2;
+            if (limax * ljmax * lkmax > GROUP_SIZE) {
+              ljmax /= 2;
+            }
+            if (limax * ljmax * lkmax > GROUP_SIZE) {
+              lkmax /= 2;
+            }
           }
-          if (limax * ljmax * lkmax > GROUP_SIZE) {
-            lkmax /= 2;
-          }
+          std::cout <<
+            "limax = " << limax << " "
+            "ljmax = " << ljmax << " "
+            "lkmax = " << lkmax << std::endl;
+          for (sum_size = 2;
+               sum_size * sum_size < local_mem_size;
+               sum_size *= sum_size);
+          std::cout <<
+            "sum_size = " << sum_size << std::endl;
+          platform = plat;
+          device = dev;
+          found_device = true;
         }
-        std::cout <<
-          "limax = " << limax << " "
-          "ljmax = " << ljmax << " "
-          "lkmax = " << lkmax << std::endl;
-        break;
+        ++dev_index;
       }
+    }
+    if (!found_device) {
+      std::cerr << "device[" << device_index << "] not found" << std::endl;
+      exit(1);
     }
     const cl_platform_id platform_id = device.getInfo<CL_DEVICE_PLATFORM>()();
     cl_context_properties properties[3];
@@ -442,17 +475,15 @@ main(int argc, char* argv[]) {
 
     DEBUG_("creating cl::Buffers...");
     current_execution = "cl::Buffers()";
-    dev_mat_p = newMat(1,mimax,mjmax,mkmax);
-    dev_mat_bnd = newMat(1,mimax,mjmax,mkmax);
-    dev_mat_wrk1 = newMat(1,mimax,mjmax,mkmax);
-    dev_mat_wrk2 = newMat(1,mimax,mjmax,mkmax);
-    dev_mat_a = newMat(4,mimax,mjmax,mkmax);
-    dev_mat_b = newMat(3,mimax,mjmax,mkmax);
-    dev_mat_c = newMat(3,mimax,mjmax,mkmax);
-    dev_mat_gosa = newMat(1,mimax,mjmax,mkmax);
-    dev_mat_sum_output = cl::Buffer(
-        context, CL_MEM_READ_WRITE,
-        sizeof(cl_float) * GROUP_SIZE);
+    dev_mat_p = newMat(1,mimax,mjmax,mkmax, "p");
+    dev_mat_bnd = newMat(1,mimax,mjmax,mkmax, "bnd");
+    dev_mat_wrk1 = newMat(1,mimax,mjmax,mkmax, "wrk1");
+    dev_mat_wrk2 = newMat(1,mimax,mjmax,mkmax, "wrk2");
+    dev_mat_a = newMat(4,mimax,mjmax,mkmax, "a");
+    dev_mat_b = newMat(3,mimax,mjmax,mkmax, "b");
+    dev_mat_c = newMat(3,mimax,mjmax,mkmax, "c");
+    dev_mat_gosa = newMat(1,mimax,mjmax,mkmax, "gosa");
+    dev_mat_sum_output = newMat(1,mimax,mjmax,mkmax, "sum_output");
 
     DEBUG_("loading kernel source...");
     current_execution = "loading kernel source";
@@ -506,6 +537,13 @@ main(int argc, char* argv[]) {
     mat_set(&dev_mat_c,0,1.0);
     mat_set(&dev_mat_c,1,1.0);
     mat_set(&dev_mat_c,2,1.0);
+
+    const size_t sz = sizeof(cl_float)
+      * static_cast<size_t>(mimax)
+      * static_cast<size_t>(mjmax)
+      * static_cast<size_t>(mkmax);
+    zeros.resize(sizeof(cl_float) * sz);
+    sum_output.resize(sizeof(cl_float) * sz);
 
     /*
      *    Start measuring
