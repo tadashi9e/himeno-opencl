@@ -41,7 +41,9 @@ static cl_int ljmax = 16;
 static cl_int lkmax = 16;
 static int GROUP_SIZE = 512;
 static cl_float omega = 0.8f;
-static size_t sum_size;
+static size_t sum_group_size;
+static size_t sum_local_size = 256;
+static size_t sum_output_size;
 static std::vector<cl_float> zeros;
 static std::vector<cl_float> sum_output;
 
@@ -268,7 +270,7 @@ static float jacobi(
   current_execution = "setup sum kernel arguments";
   kernel_sum.setArg(0, dev_mat_gosa);
   kernel_sum.setArg(1, dev_mat_sum_output);
-  kernel_sum.setArg(2, sizeof(cl_float) * sum_size, NULL);
+  kernel_sum.setArg(2, sizeof(cl_float) * sum_local_size, NULL);
   for(int n=0 ; n<nn ; n++) {
     DEBUG_("trial " << n << " / " << nn);
     DEBUG_("    executing jacobi1 kernel");
@@ -290,7 +292,7 @@ static float jacobi(
     current_execution = "enqueueWriteBuffer(sum_output as 0)";
     command_queue.enqueueWriteBuffer(
       dev_mat_sum_output, CL_TRUE, 0,
-      sizeof(cl_float) * sum_size,
+      sizeof(cl_float) * sum_output_size,
       &zeros.front());
     command_queue.finish();
     current_execution = "enqueueNDRangeKernel(sum)";
@@ -299,12 +301,13 @@ static float jacobi(
         kernel_sum,
         cl::NullRange,
         cl::NDRange(mimax * mjmax * mkmax),
-        cl::NDRange(sum_size));
+        cl::NDRange(sum_local_size));
     command_queue.finish();
     DEBUG_KERNEL("        reading gosa");
     current_execution = "enqueueReadBuffer(sum_output)";
-    command_queue.enqueueReadBuffer(dev_mat_sum_output,
-                                    CL_TRUE, 0, sum_size, &sum_output[0]);
+    command_queue.enqueueReadBuffer(
+        dev_mat_sum_output,
+        CL_TRUE, 0, sum_output_size, &sum_output[0]);
     command_queue.finish();
     DEBUG_KERNEL("        accumulating gosa");
     gosa = std::accumulate(
@@ -337,6 +340,13 @@ second()
   }
 
   return t ;
+}
+
+int roundup_div(int a, int b) {
+  if (a % b == 0) {
+    return a / b;
+  }
+  return (a / b + 1);
 }
 
 static void usage(const char* argv0) {
@@ -431,24 +441,6 @@ main(int argc, char* argv[]) {
                   << max_work_group_size << std::endl;
         if (dev_index == device_index) {
           GROUP_SIZE = max_work_group_size;
-          while (limax * ljmax * lkmax > GROUP_SIZE) {
-            limax /= 2;
-            if (limax * ljmax * lkmax > GROUP_SIZE) {
-              ljmax /= 2;
-            }
-            if (limax * ljmax * lkmax > GROUP_SIZE) {
-              lkmax /= 2;
-            }
-          }
-          std::cout <<
-            "limax = " << limax << " "
-            "ljmax = " << ljmax << " "
-            "lkmax = " << lkmax << std::endl;
-          for (sum_size = 2;
-               sum_size * sum_size < local_mem_size;
-               sum_size *= sum_size);
-          std::cout <<
-            "sum_size = " << sum_size << std::endl;
           platform = plat;
           device = dev;
           found_device = true;
@@ -460,6 +452,28 @@ main(int argc, char* argv[]) {
       std::cerr << "device[" << device_index << "] not found" << std::endl;
       exit(1);
     }
+
+    while (limax * ljmax * lkmax > GROUP_SIZE) {
+      limax /= 2;
+      if (limax * ljmax * lkmax > GROUP_SIZE) {
+        ljmax /= 2;
+      }
+      if (limax * ljmax * lkmax > GROUP_SIZE) {
+        lkmax /= 2;
+      }
+    }
+    std::cout <<
+      "limax = " << limax << " "
+      "ljmax = " << ljmax << " "
+      "lkmax = " << lkmax << std::endl;
+    sum_group_size = mimax * mjmax * mkmax / sum_local_size;
+    sum_output_size = sum_group_size;
+
+    std::cout <<
+      "sum_group_size = " << sum_group_size << std::endl;
+    std::cout <<
+      "sum_local_size = " << sum_local_size << std::endl;
+
     const cl_platform_id platform_id = device.getInfo<CL_DEVICE_PLATFORM>()();
     cl_context_properties properties[3];
     properties[0] = CL_CONTEXT_PLATFORM;
@@ -483,7 +497,7 @@ main(int argc, char* argv[]) {
     cl_int err;
     dev_mat_sum_output = cl::Buffer(
         context, CL_MEM_READ_WRITE,
-        sizeof(cl_float) * sum_size, NULL, &err);
+        sizeof(cl_float) * sum_output_size, NULL, &err);
     if (err != 0) {
       throw cl::Error(err, "failed to allocate cl::Buffer");
     }
@@ -541,9 +555,8 @@ main(int argc, char* argv[]) {
     mat_set(&dev_mat_c,1,1.0);
     mat_set(&dev_mat_c,2,1.0);
 
-    const size_t sz = sizeof(cl_float) * sum_size;
-    zeros.resize(sizeof(cl_float) * sz);
-    sum_output.resize(sizeof(cl_float) * sz);
+    zeros.resize(sum_output_size);
+    sum_output.resize(sum_output_size);
 
     /*
      *    Start measuring
