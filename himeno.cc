@@ -304,12 +304,11 @@ static float jacobi(
     DEBUG_KERNEL("        reading gosa");
     current_execution = "enqueueReadBuffer(sum_output)";
     command_queue.enqueueReadBuffer(dev_mat_sum_output,
-                                    CL_TRUE, 0, 1, &sum_output[0]);
+                                    CL_TRUE, 0, sum_size, &sum_output[0]);
     command_queue.finish();
     DEBUG_KERNEL("        accumulating gosa");
-    for (size_t i = 1; i < sum_output.size() / sum_size; ++i) {
-      gosa += sum_output[i];
-    }
+    gosa = std::accumulate(
+        sum_output.begin(), sum_output.end(), 0.0f);
     DEBUG_("    gosa=" << gosa);
   }
   current_execution = "finished jacobi1";
@@ -481,7 +480,13 @@ main(int argc, char* argv[]) {
     dev_mat_b = newMat(3,mimax,mjmax,mkmax, "b");
     dev_mat_c = newMat(3,mimax,mjmax,mkmax, "c");
     dev_mat_gosa = newMat(1,mimax,mjmax,mkmax, "gosa");
-    dev_mat_sum_output = newMat(1,mimax,mjmax,mkmax, "sum_output");
+    cl_int err;
+    dev_mat_sum_output = cl::Buffer(
+        context, CL_MEM_READ_WRITE,
+        sizeof(cl_float) * sum_size, NULL, &err);
+    if (err != 0) {
+      throw cl::Error(err, "failed to allocate cl::Buffer");
+    }
 
     DEBUG_("loading kernel source...");
     current_execution = "loading kernel source";
@@ -536,10 +541,7 @@ main(int argc, char* argv[]) {
     mat_set(&dev_mat_c,1,1.0);
     mat_set(&dev_mat_c,2,1.0);
 
-    const size_t sz = sizeof(cl_float)
-      * static_cast<size_t>(mimax)
-      * static_cast<size_t>(mjmax)
-      * static_cast<size_t>(mkmax);
+    const size_t sz = sizeof(cl_float) * sum_size;
     zeros.resize(sizeof(cl_float) * sz);
     sum_output.resize(sizeof(cl_float) * sz);
 

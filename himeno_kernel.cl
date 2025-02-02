@@ -88,6 +88,6 @@ __kernel void sum(
   }
 
   if (local_id == 0) {
-    output[global_id] = local_sum[0];
+    output[global_id / local_size] = local_sum[0];
   }
 }
