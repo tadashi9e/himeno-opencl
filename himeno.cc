@@ -341,7 +341,7 @@ second()
 }
 
 static void usage(const char* argv0) {
-  std::cout << "usage: " << "[--device N] [size]" << std::endl;
+  std::cout << "usage: " << " [--device N] [size]" << std::endl;
   std::cout << "    N    : OpenCL device index" << std::endl;
   std::cout << "    size : Problem size (xs / s / m / l / xl)" << std::endl;
   exit(1);
@@ -350,21 +350,19 @@ int
 main(int argc, char* argv[]) {
   size_t device_index = 0;
   int msize[3];
-  char   size[10];
+  char   size[10] = {0};
 
-  int arg = 1;
-  if (arg < argc &&
-      std::string(argv[arg]) == "--device") {
-    ++arg;
-    if (arg >= argc) {
-      usage(argv[0]);
+  for (int arg = 1; arg < argc; ++arg) {
+    if (std::string(argv[arg]) == "--device") {
+      if (++arg >= argc) {
+        usage(argv[0]);
+      }
+      device_index = atoi(argv[arg]);
+    } else {
+      strcpy(size, argv[arg]);
     }
-    device_index = atoi(argv[arg]);
-    ++arg;
   }
-  if (arg < argc) {
-    strcpy(size,argv[arg]);
-  } else {
+  if (size[0] == 0) {
     printf("For example: \n");
     printf(" Grid-size= XS (32x32x64)\n");
     printf("\t    S  (64x64x128)\n");
@@ -404,7 +402,7 @@ main(int argc, char* argv[]) {
         ",name[" << platname << "]"
         ",version[" << platver << "]" << std::endl;
       plat.getDevices(CL_DEVICE_TYPE_GPU, &devices);
-      for (cl::Device dev : devices) {
+      for (cl::Device& dev : devices) {
         const std::string devvendor = dev.getInfo<CL_DEVICE_VENDOR>();
         const std::string devname = dev.getInfo<CL_DEVICE_NAME>();
         const std::string devver = dev.getInfo<CL_DEVICE_VERSION>();
