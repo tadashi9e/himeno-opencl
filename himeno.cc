@@ -44,7 +44,6 @@ static cl_float omega = 0.8f;
 static size_t sum_group_size;
 static size_t sum_local_size = 256;
 static size_t sum_output_size;
-static std::vector<cl_float> zeros;
 static std::vector<cl_float> sum_output;
 
 static const char* current_execution = "initial";
@@ -104,9 +103,9 @@ cl::Buffer newMat(size_t mnums, size_t mrows, size_t mcols, size_t mdeps,
   try {
     cl_int err;
     const size_t sz = sizeof(cl_float) * mnums * mrows * mcols * mdeps;
-    std::cout << "newMat: " << sz << "=" << sizeof(cl_float)
-              << "*" << mnums << "*" << mrows << "*" << mcols << "*" << mdeps
-              << ": " << name << std::endl;
+    DEBUG_("newMat: " << sz << "=" << sizeof(cl_float)
+           << "*" << mnums << "*" << mrows << "*" << mcols << "*" << mdeps
+           << ": " << name);
     cl::Buffer buff(
         context, CL_MEM_READ_WRITE,
         sz, NULL, &err);
@@ -289,14 +288,7 @@ static float jacobi(
         sizeof(cl_float) * mimax * mjmax * mkmax);
     command_queue.finish();
     DEBUG_KERNEL("    sum of gosa");
-    current_execution = "enqueueWriteBuffer(sum_output as 0)";
-    command_queue.enqueueWriteBuffer(
-      dev_mat_sum_output, CL_TRUE, 0,
-      sizeof(cl_float) * sum_output_size,
-      &zeros.front());
-    command_queue.finish();
     current_execution = "enqueueNDRangeKernel(sum)";
-    DEBUG_KERNEL("        executing gosa sum kernel");
     command_queue.enqueueNDRangeKernel(
         kernel_sum,
         cl::NullRange,
@@ -350,19 +342,25 @@ int roundup_div(int a, int b) {
 }
 
 static void usage(const char* argv0) {
-  std::cout << "usage: " << " [--device N] [size]" << std::endl;
+  std::cout << "usage: " << " [--cpu] [--gpu] [--device N] [size]" << std::endl;
   std::cout << "    N    : OpenCL device index" << std::endl;
   std::cout << "    size : Problem size (xs / s / m / l / xl)" << std::endl;
   exit(1);
 }
 int
 main(int argc, char* argv[]) {
+  cl_device_type device_type = CL_DEVICE_TYPE_GPU;
   size_t device_index = 0;
   int msize[3];
   char   size[10] = {0};
 
   for (int arg = 1; arg < argc; ++arg) {
-    if (std::string(argv[arg]) == "--device") {
+    const std::string arg_str(argv[arg]);
+    if (arg_str == "--cpu") {
+      device_type = CL_DEVICE_TYPE_CPU;
+    } else if (arg_str == "--gpu") {
+      device_type = CL_DEVICE_TYPE_GPU;
+    } else if (arg_str == "--device") {
       if (++arg >= argc) {
         usage(argv[0]);
       }
@@ -410,7 +408,7 @@ main(int argc, char* argv[]) {
       std::cout << "platform: vendor[" << platvendor << "]"
         ",name[" << platname << "]"
         ",version[" << platver << "]" << std::endl;
-      plat.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+      plat.getDevices(device_type, &devices);
       for (cl::Device& dev : devices) {
         const std::string devvendor = dev.getInfo<CL_DEVICE_VENDOR>();
         const std::string devname = dev.getInfo<CL_DEVICE_NAME>();
@@ -555,7 +553,6 @@ main(int argc, char* argv[]) {
     mat_set(&dev_mat_c,1,1.0);
     mat_set(&dev_mat_c,2,1.0);
 
-    zeros.resize(sum_output_size);
     sum_output.resize(sum_output_size);
 
     /*
