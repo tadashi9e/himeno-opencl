@@ -1,3 +1,43 @@
+/********************************************************************
+
+ This benchmark test program is measuring a cpu performance
+ of floating point operation by a Poisson equation solver.
+
+ If you have any question, please ask me via email.
+ written by Ryutaro HIMENO, November 26, 2001.
+ Version 3.0
+ ----------------------------------------------
+ Ryutaro Himeno, Dr. of Eng.
+ Head of Computer Information Division,
+ RIKEN (The Institute of Pysical and Chemical Research)
+ Email : himeno@postman.riken.go.jp
+ ---------------------------------------------------------------
+ You can adjust the size of this benchmark code to fit your target
+ computer. In that case, please chose following sets of
+ [mimax][mjmax][mkmax]:
+ small : 33,33,65
+ small : 65,65,129
+ midium: 129,129,257
+ large : 257,257,513
+ ext.large: 513,513,1025
+ This program is to measure a computer performance in MFLOPS
+ by using a kernel which appears in a linear solver of pressure
+ Poisson eq. which appears in an incompressible Navier-Stokes solver.
+ A point-Jacobi method is employed in this solver as this method can 
+ be easyly vectrized and be parallelized.
+ ------------------
+ Finite-difference method, curvilinear coodinate system
+ Vectorizable and parallelizable on each grid point
+ No. of grid points : imax x jmax x kmax including boundaries
+ ------------------
+ A,B,C:coefficient matrix, wrk1: source term of Poisson equation
+ wrk2 : working area, OMEGA : relaxation parameter
+ BND:control variable for boundaries and objects ( = 0 or 1)
+ P: pressure
+********************************************************************/
+
+#include <stdio.h>
+#include <string.h>
 #include <sys/time.h>
 #include <fstream>
 #include <iostream>
@@ -15,113 +55,17 @@
 
 static const char* KERNEL_SOURCE = "himeno_kernel.cl";
 
-static cl::Platform platform;
-static cl::Device device;
-static cl::Context context;
-static cl::CommandQueue command_queue;
-static cl::Program program;
-static cl::Kernel kernel_mat_set_init;
-static cl::Kernel kernel_mat_set;
-static cl::Kernel kernel_jacobi1;
-static cl::Kernel kernel_sum;
-static cl::Buffer dev_mat_p;
-static cl::Buffer dev_mat_bnd;
-static cl::Buffer dev_mat_wrk1;
-static cl::Buffer dev_mat_wrk2;
-static cl::Buffer dev_mat_a;
-static cl::Buffer dev_mat_b;
-static cl::Buffer dev_mat_c;
-static cl::Buffer dev_mat_gosa;
-static cl::Buffer dev_mat_sum_output;
-static cl_int mimax;
-static cl_int mjmax;
-static cl_int mkmax;
-static cl_int limax = 16;
-static cl_int ljmax = 16;
-static cl_int lkmax = 16;
-static int GROUP_SIZE = 512;
-static cl_float omega = 0.8f;
-static size_t sum_group_size;
-static size_t sum_local_size = 256;
-static size_t sum_output_size;
-static std::vector<cl_float> sum_output;
-
-static const char* current_execution = "initial";
-
-double
-fflop(int mx,int my, int mz)
-{
-  return((double)(mz-2)*(double)(my-2)*(double)(mx-2)*34.0);
-}
-
-double
-mflops(int nn,double cpu,double flop)
-{
-  return(flop/cpu*1.e-6*(double)nn);
-}
-
-void
-set_param(int is[],char *size)
-{
-  if(!strcmp(size,"XS") || !strcmp(size,"xs")){
-    is[0]= 32;
-    is[1]= 32;
-    is[2]= 64;
-    return;
-  }
-  if(!strcmp(size,"S") || !strcmp(size,"s")){
-    is[0]= 64;
-    is[1]= 64;
-    is[2]= 128;
-    return;
-  }
-  if(!strcmp(size,"M") || !strcmp(size,"m")){
-    is[0]= 128;
-    is[1]= 128;
-    is[2]= 256;
-    return;
-  }
-  if(!strcmp(size,"L") || !strcmp(size,"l")){
-    is[0]= 256;
-    is[1]= 256;
-    is[2]= 512;
-    return;
-  }
-  if(!strcmp(size,"XL") || !strcmp(size,"xl")){
-    is[0]= 512;
-    is[1]= 512;
-    is[2]= 1024;
-    return;
-  } else {
-    printf("Invalid input character !!\n");
-    exit(6);
-  }
-}
-
+/* prototypes */
 cl::Buffer newMat(size_t mnums, size_t mrows, size_t mcols, size_t mdeps,
-                  const char* name) {
-  try {
-    cl_int err;
-    const size_t sz = sizeof(cl_float) * mnums * mrows * mcols * mdeps;
-    DEBUG_("newMat: " << sz << "=" << sizeof(cl_float)
-           << "*" << mnums << "*" << mrows << "*" << mcols << "*" << mdeps
-           << ": " << name);
-    cl::Buffer buff(
-        context, CL_MEM_READ_WRITE,
-        sz, NULL, &err);
-    if (err != 0) {
-      throw cl::Error(err, "failed to allocate cl::Buffer");
-    }
-    return buff;
-  } catch (...) {
-    std::cerr << "failed to allocate cl::Buffer" << std::endl;
-    throw;
-  }
-}
+                  const char* name);
+int set_param(int i[],char *size);
+void mat_set(cl::Buffer* Mat, cl_int l, cl_float z);
+void mat_set_init(cl::Buffer* Mat);
+float jacobi(int nn);
+double fflop(int,int,int);
+double mflops(int,double,double);
+double second();
 
-// ----------------------------------------------------------------------
-// utility function
-// ----------------------------------------------------------------------
 static void report_cl_error(const cl::Error& err) {
   const char* s = "-";
   switch (err.err()) {
@@ -207,169 +151,81 @@ static void report_cl_error(const cl::Error& err) {
     ": " << s << "(" << err.err() << ")" << std::endl;
 }
 
-static std::string loadProgramSource(const char *filename) {
+std::string loadProgramSource(const char *filename) {
   std::ifstream ifs(filename);
   const std::string content((std::istreambuf_iterator<char>(ifs)),
                             (std::istreambuf_iterator<char>()));
   return content;
 }
 
-static void mat_set_init(cl::Buffer* Mat) {
-  DEBUG_("mat_set_init(Mat)");
-  try {
-    kernel_mat_set_init.setArg(0, *Mat);
-    command_queue.enqueueNDRangeKernel(
-        kernel_mat_set_init,
-        cl::NullRange,
-        cl::NDRange(mimax, mjmax, mkmax),
-        cl::NDRange(limax, ljmax, lkmax));
-    command_queue.finish();
-  } catch (...) {
-    std::cerr << "failed to mat_set_init" << std::endl;
-    throw;
-  }
+void usage(const char* argv0) {
+  std::cout
+    << "usage: " << argv0 << " [--cpu] [--gpu] [--device N] [Grid-size]"
+    << std::endl;
 }
 
-static void mat_set(cl::Buffer* Mat, cl_int l, cl_float z) {
-  DEBUG_("mat_set(Mat," << l << "," << z << ")");
-  try {
-    kernel_mat_set.setArg(0, *Mat);
-    kernel_mat_set.setArg(1, sizeof(cl_int), &l);
-    kernel_mat_set.setArg(2, sizeof(cl_float), &z);
-    command_queue.enqueueNDRangeKernel(
-        kernel_mat_set,
-        cl::NullRange,
-        cl::NDRange(mimax, mjmax, mkmax),
-        cl::NDRange(limax, ljmax, lkmax));
-    command_queue.finish();
-  } catch (...) {
-    std::cerr << "failed to mat_set" << std::endl;
-    throw;
-  }
-}
+static cl::Platform platform;
+static cl::Device device;
+static cl::Context context;
+static cl::CommandQueue command_queue;
+static cl::Program program;
+static cl::Kernel kernel_mat_set_init;
+static cl::Kernel kernel_mat_set;
+static cl::Kernel kernel_jacobi1;
+static cl::Kernel kernel_sum;
+static cl::Buffer dev_mat_p;
+static cl::Buffer dev_mat_bnd;
+static cl::Buffer dev_mat_wrk1;
+static cl::Buffer dev_mat_wrk2;
+static cl::Buffer dev_mat_a;
+static cl::Buffer dev_mat_b;
+static cl::Buffer dev_mat_c;
+static cl::Buffer dev_mat_gosa;
+static cl::Buffer dev_mat_sum_output;
+static cl_int mimax;
+static cl_int mjmax;
+static cl_int mkmax;
+static cl_int limax = 16;
+static cl_int ljmax = 16;
+static cl_int lkmax = 16;
+static int GROUP_SIZE = 512;
+static cl_float omega = 0.8f;
+static size_t sum_group_size;
+static size_t sum_local_size = 256;
+static size_t sum_output_size;
+static std::vector<cl_float> sum_output;
 
-static float jacobi(
-    int nn,
-    cl::Buffer* M1, cl::Buffer* M2, cl::Buffer* M3,
-    cl::Buffer* M4, cl::Buffer* M5, cl::Buffer* M6, cl::Buffer* M7) {
-  DEBUG_("jacobi(" << nn << ")");
-  cl_float gosa = 0.0f;
-  DEBUG_("    setup jacobi1 kernel arguments");
-  current_execution = "setup jacobi1 kernel arguments";
-  kernel_jacobi1.setArg(0, dev_mat_a);
-  kernel_jacobi1.setArg(1, dev_mat_b);
-  kernel_jacobi1.setArg(2, dev_mat_c);
-  kernel_jacobi1.setArg(3, dev_mat_p);
-  kernel_jacobi1.setArg(4, dev_mat_bnd);
-  kernel_jacobi1.setArg(5, dev_mat_wrk1);
-  kernel_jacobi1.setArg(6, dev_mat_wrk2);
-  kernel_jacobi1.setArg(7, dev_mat_gosa);
-  kernel_jacobi1.setArg(8, sizeof(cl_float), &omega);
-  DEBUG_("    setup sum kernel arguments");
-  current_execution = "setup sum kernel arguments";
-  kernel_sum.setArg(0, dev_mat_gosa);
-  kernel_sum.setArg(1, dev_mat_sum_output);
-  kernel_sum.setArg(2, sizeof(cl_float) * sum_local_size, NULL);
-  for(int n=0 ; n<nn ; n++) {
-    DEBUG_("trial " << n << " / " << nn);
-    DEBUG_("    executing jacobi1 kernel");
-    current_execution = "enqueueNDRangeKernel(jacobi1)";
-    command_queue.enqueueNDRangeKernel(
-        kernel_jacobi1,
-        cl::NullRange,
-        cl::NDRange(mimax, mjmax, mkmax),
-        cl::NDRange(limax, ljmax, lkmax));
-    command_queue.finish();
-    DEBUG_KERNEL("    copy p := wrk2");
-    current_execution = "enqueueCopyBuffer(from wrk2 to p)";
-    command_queue.enqueueCopyBuffer(
-        dev_mat_wrk2, dev_mat_p,
-        0, 0,
-        sizeof(cl_float) * mimax * mjmax * mkmax);
-    command_queue.finish();
-    DEBUG_KERNEL("    sum of gosa");
-    current_execution = "enqueueNDRangeKernel(sum)";
-    command_queue.enqueueNDRangeKernel(
-        kernel_sum,
-        cl::NullRange,
-        cl::NDRange(mimax * mjmax * mkmax),
-        cl::NDRange(sum_local_size));
-    command_queue.finish();
-    DEBUG_KERNEL("        reading gosa");
-    current_execution = "enqueueReadBuffer(sum_output)";
-    command_queue.enqueueReadBuffer(
-        dev_mat_sum_output,
-        CL_TRUE, 0, sum_output_size, &sum_output[0]);
-    command_queue.finish();
-    DEBUG_KERNEL("        accumulating gosa");
-    gosa = std::accumulate(
-        sum_output.begin(), sum_output.end(), 0.0f);
-    DEBUG_("    gosa=" << gosa);
-  }
-  current_execution = "finished jacobi1";
-  return gosa;
-}
+static const char* current_execution = "initial";
 
-double
-second()
-{
-
-  struct timeval tm;
-  double t ;
-
-  static int base_sec = 0,base_usec = 0;
-
-  gettimeofday(&tm, NULL);
-  
-  if(base_sec == 0 && base_usec == 0)
-    {
-      base_sec = tm.tv_sec;
-      base_usec = tm.tv_usec;
-      t = 0.0;
-  } else {
-    t = (double) (tm.tv_sec-base_sec) + 
-      ((double) (tm.tv_usec-base_usec))/1.0e6 ;
-  }
-
-  return t ;
-}
-
-int roundup_div(int a, int b) {
-  if (a % b == 0) {
-    return a / b;
-  }
-  return (a / b + 1);
-}
-
-static void usage(const char* argv0) {
-  std::cout << "usage: " << " [--cpu] [--gpu] [--device N] [size]" << std::endl;
-  std::cout << "    N    : OpenCL device index" << std::endl;
-  std::cout << "    size : Problem size (xs / s / m / l / xl)" << std::endl;
-  exit(1);
-}
 int
-main(int argc, char* argv[]) {
+main(int argc, char *argv[])
+{
   cl_device_type device_type = CL_DEVICE_TYPE_GPU;
   size_t device_index = 0;
-  int msize[3];
-  char   size[10] = {0};
+  int    imax,jmax,kmax,msize[3];
+  int    nn;
+  float  gosa,target;
+  double  cpu0,cpu1,cpu,flop;
+  char*   size = NULL;
 
-  for (int arg = 1; arg < argc; ++arg) {
-    const std::string arg_str(argv[arg]);
-    if (arg_str == "--cpu") {
+  for (int i = 1; i < argc; ++i) {
+    std::string arg_str{argv[i]};
+    if (arg_str == "--cpu" || arg_str == "-c") {
       device_type = CL_DEVICE_TYPE_CPU;
-    } else if (arg_str == "--gpu") {
+    } else if (arg_str == "--gpu" || arg_str == "-g") {
       device_type = CL_DEVICE_TYPE_GPU;
-    } else if (arg_str == "--device") {
-      if (++arg >= argc) {
-        usage(argv[0]);
+    } else if (arg_str == "--device" || arg_str == "-d") {
+      ++i;
+      if (i >= argc) {
+        break;
       }
-      device_index = atoi(argv[arg]);
+      device_index = atoi(argv[i]);
     } else {
-      strcpy(size, argv[arg]);
+      size = argv[i];
     }
   }
-  if (size[0] == 0) {
+  if (!size) {
+    usage(argv[0]);
     printf("For example: \n");
     printf(" Grid-size= XS (32x32x64)\n");
     printf("\t    S  (64x64x128)\n");
@@ -380,19 +236,21 @@ main(int argc, char* argv[]) {
     scanf("%s",size);
     printf("\n");
   }
-  set_param(msize,size);
 
+  int err = set_param(msize,size);
+  if (err) {
+    usage(argv[0]);
+    exit(6);
+  }
+  
   mimax= msize[0];
   mjmax= msize[1];
   mkmax= msize[2];
-  const int imax= mimax-1;
-  const int jmax= mjmax-1;
-  const int kmax= mkmax-1;
+  imax= mimax-1;
+  jmax= mjmax-1;
+  kmax= mkmax-1;
 
-  const float target = 60.0;
-
-  printf("mimax = %d mjmax = %d mkmax = %d\n",mimax,mjmax,mkmax);
-  printf("imax = %d jmax = %d kmax =%d\n",imax,jmax,kmax);
+  target = 60.0;
 
   try {
     current_execution = "cl::Platform::get()";
@@ -405,9 +263,11 @@ main(int argc, char* argv[]) {
       const std::string platvendor = plat.getInfo<CL_PLATFORM_VENDOR>();
       const std::string platname = plat.getInfo<CL_PLATFORM_NAME>();
       const std::string platver = plat.getInfo<CL_PLATFORM_VERSION>();
+#ifdef DEBUG
       std::cout << "platform: vendor[" << platvendor << "]"
         ",name[" << platname << "]"
         ",version[" << platver << "]" << std::endl;
+#endif  // DEBUG
       plat.getDevices(device_type, &devices);
       for (cl::Device& dev : devices) {
         const std::string devvendor = dev.getInfo<CL_DEVICE_VENDOR>();
@@ -417,6 +277,7 @@ main(int argc, char* argv[]) {
           "device[" << dev_index << "]: vendor[" << devvendor << "]"
           ",name[" << devname << "]"
           ",version[" << devver << "]" << std::endl;
+#ifdef DEBUG
         size_t global_mem_size;
         dev.getInfo(CL_DEVICE_GLOBAL_MEM_SIZE,
                     &global_mem_size);
@@ -432,6 +293,7 @@ main(int argc, char* argv[]) {
                     &max_compute_units);
         std::cout << "        DEVICE_MAX_COMPUTE_UNITS="
                   << max_compute_units << std::endl;
+#endif  // DEBUG
         size_t max_work_group_size;
         dev.getInfo(CL_DEVICE_MAX_WORK_GROUP_SIZE,
                     &max_work_group_size);
@@ -460,6 +322,8 @@ main(int argc, char* argv[]) {
         lkmax /= 2;
       }
     }
+    printf("mimax = %d mjmax = %d mkmax = %d\n",mimax,mjmax,mkmax);
+    printf("imax = %d jmax = %d kmax =%d\n",imax,jmax,kmax);
     std::cout <<
       "limax = " << limax << " "
       "ljmax = " << ljmax << " "
@@ -558,19 +422,12 @@ main(int argc, char* argv[]) {
     /*
      *    Start measuring
      */
-    int nn;
-    float gosa;
-    double cpu0, cpu1, cpu;
-    double flop;
-
     nn= 3;
     printf(" Start rehearsal measurement process.\n");
     printf(" Measure the performance in %d times.\n\n",nn);
 
     cpu0= second();
-    gosa= jacobi(nn,&dev_mat_a,&dev_mat_b,&dev_mat_c,
-                 &dev_mat_p,&dev_mat_bnd,
-                 &dev_mat_wrk1,&dev_mat_wrk2);
+    gosa= jacobi(nn);
     cpu1= second();
     cpu= cpu1 - cpu0;
     flop= fflop(imax,jmax,kmax);
@@ -586,9 +443,7 @@ main(int argc, char* argv[]) {
     printf(" Wait for a while\n\n");
 
     cpu0 = second();
-    gosa = jacobi(nn,&dev_mat_a,&dev_mat_b,&dev_mat_c,
-                  &dev_mat_p,&dev_mat_bnd,
-                  &dev_mat_wrk1,&dev_mat_wrk2);
+    gosa = jacobi(nn);
     cpu1 = second();
     cpu = cpu1 - cpu0;
 
@@ -603,3 +458,196 @@ main(int argc, char* argv[]) {
   }
   return 0;
 }
+
+double
+fflop(int mx,int my, int mz)
+{
+  return((double)(mz-2)*(double)(my-2)*(double)(mx-2)*34.0);
+}
+
+double
+mflops(int nn,double cpu,double flop)
+{
+  return(flop/cpu*1.e-6*(double)nn);
+}
+
+int
+set_param(int is[],char *size)
+{
+  if(!strcmp(size,"XS") || !strcmp(size,"xs")){
+    is[0]= 32;
+    is[1]= 32;
+    is[2]= 64;
+    return 0;
+  }
+  if(!strcmp(size,"S") || !strcmp(size,"s")){
+    is[0]= 64;
+    is[1]= 64;
+    is[2]= 128;
+    return 0;
+  }
+  if(!strcmp(size,"M") || !strcmp(size,"m")){
+    is[0]= 128;
+    is[1]= 128;
+    is[2]= 256;
+    return 0;
+  }
+  if(!strcmp(size,"L") || !strcmp(size,"l")){
+    is[0]= 256;
+    is[1]= 256;
+    is[2]= 512;
+    return 0;
+  }
+  if(!strcmp(size,"XL") || !strcmp(size,"xl")){
+    is[0]= 512;
+    is[1]= 512;
+    is[2]= 1024;
+    return 0;
+  } else {
+    printf("Invalid input character !!\n");
+    return EINVAL;
+  }
+}
+
+cl::Buffer
+newMat(size_t mnums, size_t mrows, size_t mcols, size_t mdeps,
+       const char* name) {
+  try {
+    cl_int err;
+    const size_t sz = sizeof(cl_float) * mnums * mrows * mcols * mdeps;
+    DEBUG_("newMat: " << sz << "=" << sizeof(cl_float)
+           << "*" << mnums << "*" << mrows << "*" << mcols << "*" << mdeps
+           << ": " << name);
+    cl::Buffer buff(
+        context, CL_MEM_READ_WRITE,
+        sz, NULL, &err);
+    if (err != 0) {
+      throw cl::Error(err, "failed to allocate cl::Buffer");
+    }
+    return buff;
+  } catch (...) {
+    std::cerr << "failed to allocate cl::Buffer" << std::endl;
+    throw;
+  }
+}
+
+void
+mat_set(cl::Buffer* Mat, cl_int l, cl_float z) {
+  DEBUG_("mat_set(Mat," << l << "," << z << ")");
+  try {
+    kernel_mat_set.setArg(0, *Mat);
+    kernel_mat_set.setArg(1, sizeof(cl_int), &l);
+    kernel_mat_set.setArg(2, sizeof(cl_float), &z);
+    command_queue.enqueueNDRangeKernel(
+        kernel_mat_set,
+        cl::NullRange,
+        cl::NDRange(mimax, mjmax, mkmax),
+        cl::NDRange(limax, ljmax, lkmax));
+    command_queue.finish();
+  } catch (...) {
+    std::cerr << "failed to mat_set" << std::endl;
+    throw;
+  }
+}
+
+void
+mat_set_init(cl::Buffer* Mat) {
+  DEBUG_("mat_set_init(Mat)");
+  try {
+    kernel_mat_set_init.setArg(0, *Mat);
+    command_queue.enqueueNDRangeKernel(
+        kernel_mat_set_init,
+        cl::NullRange,
+        cl::NDRange(mimax, mjmax, mkmax),
+        cl::NDRange(limax, ljmax, lkmax));
+    command_queue.finish();
+  } catch (...) {
+    std::cerr << "failed to mat_set_init" << std::endl;
+    throw;
+  }
+}
+
+float
+jacobi(int nn) {
+  DEBUG_("jacobi(" << nn << ")");
+  cl_float gosa = 0.0f;
+  DEBUG_("    setup jacobi1 kernel arguments");
+  current_execution = "setup jacobi1 kernel arguments";
+  kernel_jacobi1.setArg(0, dev_mat_a);
+  kernel_jacobi1.setArg(1, dev_mat_b);
+  kernel_jacobi1.setArg(2, dev_mat_c);
+  kernel_jacobi1.setArg(3, dev_mat_p);
+  kernel_jacobi1.setArg(4, dev_mat_bnd);
+  kernel_jacobi1.setArg(5, dev_mat_wrk1);
+  kernel_jacobi1.setArg(6, dev_mat_wrk2);
+  kernel_jacobi1.setArg(7, dev_mat_gosa);
+  kernel_jacobi1.setArg(8, sizeof(cl_float), &omega);
+  DEBUG_("    setup sum kernel arguments");
+  current_execution = "setup sum kernel arguments";
+  kernel_sum.setArg(0, dev_mat_gosa);
+  kernel_sum.setArg(1, dev_mat_sum_output);
+  kernel_sum.setArg(2, sizeof(cl_float) * sum_local_size, NULL);
+  for(int n=0 ; n<nn ; n++) {
+    DEBUG_("trial " << n << " / " << nn);
+    DEBUG_("    executing jacobi1 kernel");
+    current_execution = "enqueueNDRangeKernel(jacobi1)";
+    command_queue.enqueueNDRangeKernel(
+        kernel_jacobi1,
+        cl::NullRange,
+        cl::NDRange(mimax, mjmax, mkmax),
+        cl::NDRange(limax, ljmax, lkmax));
+    command_queue.finish();
+    DEBUG_KERNEL("    copy p := wrk2");
+    current_execution = "enqueueCopyBuffer(from wrk2 to p)";
+    command_queue.enqueueCopyBuffer(
+        dev_mat_wrk2, dev_mat_p,
+        0, 0,
+        sizeof(cl_float) * mimax * mjmax * mkmax);
+    command_queue.finish();
+    DEBUG_KERNEL("    sum of gosa");
+    current_execution = "enqueueNDRangeKernel(sum)";
+    command_queue.enqueueNDRangeKernel(
+        kernel_sum,
+        cl::NullRange,
+        cl::NDRange(mimax * mjmax * mkmax),
+        cl::NDRange(sum_local_size));
+    command_queue.finish();
+    DEBUG_KERNEL("        reading gosa");
+    current_execution = "enqueueReadBuffer(sum_output)";
+    command_queue.enqueueReadBuffer(
+        dev_mat_sum_output,
+        CL_TRUE, 0, sum_output_size, &sum_output[0]);
+    command_queue.finish();
+    DEBUG_KERNEL("        accumulating gosa");
+    gosa = std::accumulate(
+        sum_output.begin(), sum_output.end(), 0.0f);
+    DEBUG_("    gosa=" << gosa);
+  }
+  current_execution = "finished jacobi1";
+  return gosa;
+}
+
+double
+second()
+{
+
+  struct timeval tm;
+  double t ;
+
+  static int base_sec = 0,base_usec = 0;
+
+  gettimeofday(&tm, NULL);
+  
+  if(base_sec == 0 && base_usec == 0)
+    {
+      base_sec = tm.tv_sec;
+      base_usec = tm.tv_usec;
+      t = 0.0;
+  } else {
+    t = (double) (tm.tv_sec-base_sec) + 
+      ((double) (tm.tv_usec-base_usec))/1.0e6 ;
+  }
+
+  return t ;
+}
+
