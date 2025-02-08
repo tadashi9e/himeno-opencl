@@ -1,9 +1,10 @@
-CXX_FLAGS=-Wall -D__CL_ENABLE_EXCEPTIONS -DCL_HPP_TARGET_OPENCL_VERSION=220 #-DDEBUG
+CXXFLAGS=-Wall `pkg-config --cflags OpenCL`
+LDFLAGS=`pkg-config --libs OpenCL`
 
 all: himeno
 
 himeno: himeno.cc
-	g++ $(CXX_FLAGS) himeno.cc -o himeno -g `pkg-config --libs --cflags OpenCL`
+	g++ $(CXXFLAGS) himeno.cc -o himeno -g $(LDFLAGS)
 
 clean:
 	rm -rf himeno

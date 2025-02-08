@@ -42,6 +42,7 @@
 #include <fstream>
 #include <iostream>
 #include <numeric>
+#define CL_HPP_TARGET_OPENCL_VERSION 220
 #define CL_HPP_ENABLE_EXCEPTIONS
 #include <CL/opencl.hpp>
 
@@ -356,13 +357,9 @@ main(int argc, char *argv[])
     dev_mat_b = newMat(3,mimax,mjmax,mkmax, "b");
     dev_mat_c = newMat(3,mimax,mjmax,mkmax, "c");
     dev_mat_gosa = newMat(1,mimax,mjmax,mkmax, "gosa");
-    cl_int err;
     dev_mat_sum_output = cl::Buffer(
         context, CL_MEM_READ_WRITE,
-        sizeof(cl_float) * sum_output_size, NULL, &err);
-    if (err != 0) {
-      throw cl::Error(err, "failed to allocate cl::Buffer");
-    }
+        sizeof(cl_float) * sum_output_size);
 
     DEBUG_("loading kernel source...");
     current_execution = "loading kernel source";
@@ -513,17 +510,11 @@ cl::Buffer
 newMat(size_t mnums, size_t mrows, size_t mcols, size_t mdeps,
        const char* name) {
   try {
-    cl_int err;
     const size_t sz = sizeof(cl_float) * mnums * mrows * mcols * mdeps;
     DEBUG_("newMat: " << sz << "=" << sizeof(cl_float)
            << "*" << mnums << "*" << mrows << "*" << mcols << "*" << mdeps
            << ": " << name);
-    cl::Buffer buff(
-        context, CL_MEM_READ_WRITE,
-        sz, NULL, &err);
-    if (err != 0) {
-      throw cl::Error(err, "failed to allocate cl::Buffer");
-    }
+    cl::Buffer buff(context, CL_MEM_READ_WRITE, sz);
     return buff;
   } catch (...) {
     std::cerr << "failed to allocate cl::Buffer" << std::endl;
