@@ -161,8 +161,14 @@ std::string loadProgramSource(const char *filename) {
 
 void usage(const char* argv0) {
   std::cout
-    << "usage: " << argv0 << " [--cpu] [--gpu] [--device N] [Grid-size]"
+    << "usage: " << argv0 << " [--device N] [Grid-size]"
     << std::endl;
+  std::cout << "For example:" << std::endl;
+  std::cout << " Grid-size= XS (32x32x64)" << std::endl;
+  std::cout << "\t    S  (64x64x128)" << std::endl;
+  std::cout << "\t    M  (128x128x256)" << std::endl;
+  std::cout << "\t    L  (256x256x512)" << std::endl;
+  std::cout << "\t    XL (512x512x1024)" << std::endl;
 }
 
 static cl::Platform platform;
@@ -201,49 +207,35 @@ static const char* current_execution = "initial";
 int
 main(int argc, char *argv[])
 {
-  cl_device_type device_type = CL_DEVICE_TYPE_GPU;
   size_t device_index = 0;
-  int    imax,jmax,kmax,msize[3];
+  int    imax,jmax,kmax,msize[3] = {0};
   int    nn;
   float  gosa,target;
   double  cpu0,cpu1,cpu,flop;
-  char*   size = NULL;
 
   for (int i = 1; i < argc; ++i) {
     std::string arg_str{argv[i]};
-    if (arg_str == "--cpu" || arg_str == "-c") {
-      device_type = CL_DEVICE_TYPE_CPU;
-    } else if (arg_str == "--gpu" || arg_str == "-g") {
-      device_type = CL_DEVICE_TYPE_GPU;
-    } else if (arg_str == "--device" || arg_str == "-d") {
+    if (arg_str == "--device" || arg_str == "-d") {
       ++i;
       if (i >= argc) {
         break;
       }
       device_index = atoi(argv[i]);
     } else {
-      size = argv[i];
+      const int err = set_param(msize, argv[i]);
+      if (err) {
+        usage(argv[0]);
+        exit(6);
+      }
     }
   }
-  if (!size) {
-    usage(argv[0]);
-    printf("For example: \n");
-    printf(" Grid-size= XS (32x32x64)\n");
-    printf("\t    S  (64x64x128)\n");
-    printf("\t    M  (128x128x256)\n");
-    printf("\t    L  (256x256x512)\n");
-    printf("\t    XL (512x512x1024)\n\n");
-    printf("Grid-size = ");
-    scanf("%s",size);
-    printf("\n");
-  }
-
-  int err = set_param(msize,size);
-  if (err) {
+  if (msize[0] == 0 ||
+      msize[0] == 1 ||
+      msize[0] == 2) {
     usage(argv[0]);
     exit(6);
   }
-  
+
   mimax= msize[0];
   mjmax= msize[1];
   mkmax= msize[2];
@@ -254,13 +246,12 @@ main(int argc, char *argv[])
   target = 60.0;
 
   try {
+    bool found_device = false;
+    size_t dev_index = 0;
     current_execution = "cl::Platform::get()";
     std::vector<cl::Platform> platforms;
     cl::Platform::get(&platforms);
-    bool found_device = false;
-    size_t dev_index = 0;
     for (cl::Platform& plat : platforms) {
-      std::vector<cl::Device> devices;
       const std::string platvendor = plat.getInfo<CL_PLATFORM_VENDOR>();
       const std::string platname = plat.getInfo<CL_PLATFORM_NAME>();
       const std::string platver = plat.getInfo<CL_PLATFORM_VERSION>();
@@ -269,44 +260,50 @@ main(int argc, char *argv[])
         ",name[" << platname << "]"
         ",version[" << platver << "]" << std::endl;
 #endif  // DEBUG
-      plat.getDevices(device_type, &devices);
-      for (cl::Device& dev : devices) {
-        const std::string devvendor = dev.getInfo<CL_DEVICE_VENDOR>();
-        const std::string devname = dev.getInfo<CL_DEVICE_NAME>();
-        const std::string devver = dev.getInfo<CL_DEVICE_VERSION>();
-        std::cout << ((dev_index == device_index) ? '*' : ' ') <<
-          "device[" << dev_index << "]: vendor[" << devvendor << "]"
-          ",name[" << devname << "]"
-          ",version[" << devver << "]" << std::endl;
+      for (cl_device_type device_type
+             : {CL_DEVICE_TYPE_CPU, CL_DEVICE_TYPE_GPU}) {
+        std::vector<cl::Device> devices;
+        current_execution = "cl::Platform::getDevices()";
+        plat.getDevices(device_type, &devices);
+        for (cl::Device& dev : devices) {
+          current_execution = "cl::Device::getInfo()";
+          const std::string devvendor = dev.getInfo<CL_DEVICE_VENDOR>();
+          const std::string devname = dev.getInfo<CL_DEVICE_NAME>();
+          const std::string devver = dev.getInfo<CL_DEVICE_VERSION>();
+          std::cout << ((dev_index == device_index) ? '*' : ' ') <<
+            "device[" << dev_index << "]: vendor[" << devvendor << "]"
+            ",name[" << devname << "]"
+            ",version[" << devver << "]" << std::endl;
 #ifdef DEBUG
-        size_t global_mem_size;
-        dev.getInfo(CL_DEVICE_GLOBAL_MEM_SIZE,
-                    &global_mem_size);
-        std::cout << "        DEVICE_GLOBAL_MEM_SIZE="
-                  << global_mem_size << std::endl;
-        size_t local_mem_size;
-        dev.getInfo(CL_DEVICE_LOCAL_MEM_SIZE,
-                    &local_mem_size);
-        std::cout << "        DEVICE_LOCAL_MEM_SIZE="
-                  << local_mem_size << std::endl;
-        int max_compute_units;
-        dev.getInfo(CL_DEVICE_MAX_COMPUTE_UNITS,
-                    &max_compute_units);
-        std::cout << "        DEVICE_MAX_COMPUTE_UNITS="
-                  << max_compute_units << std::endl;
+          size_t global_mem_size;
+          dev.getInfo(CL_DEVICE_GLOBAL_MEM_SIZE,
+                      &global_mem_size);
+          std::cout << "        DEVICE_GLOBAL_MEM_SIZE="
+                    << global_mem_size << std::endl;
+          size_t local_mem_size;
+          dev.getInfo(CL_DEVICE_LOCAL_MEM_SIZE,
+                      &local_mem_size);
+          std::cout << "        DEVICE_LOCAL_MEM_SIZE="
+                    << local_mem_size << std::endl;
+          int max_compute_units;
+          dev.getInfo(CL_DEVICE_MAX_COMPUTE_UNITS,
+                      &max_compute_units);
+          std::cout << "        DEVICE_MAX_COMPUTE_UNITS="
+                    << max_compute_units << std::endl;
 #endif  // DEBUG
-        size_t max_work_group_size;
-        dev.getInfo(CL_DEVICE_MAX_WORK_GROUP_SIZE,
-                    &max_work_group_size);
-        std::cout << "        DEVICE_MAX_WORK_GROUP_SIZE="
-                  << max_work_group_size << std::endl;
-        if (dev_index == device_index) {
-          GROUP_SIZE = max_work_group_size;
-          platform = plat;
-          device = dev;
-          found_device = true;
+          size_t max_work_group_size;
+          dev.getInfo(CL_DEVICE_MAX_WORK_GROUP_SIZE,
+                      &max_work_group_size);
+          std::cout << "        DEVICE_MAX_WORK_GROUP_SIZE="
+                    << max_work_group_size << std::endl;
+          if (dev_index == device_index) {
+            GROUP_SIZE = max_work_group_size;
+            platform = plat;
+            device = dev;
+            found_device = true;
+          }
+          ++dev_index;
         }
-        ++dev_index;
       }
     }
     if (!found_device) {
